@@ -100,7 +100,7 @@ def handle_query(request: QueryRequest):
         analytics["totalTokensSaved"] += AVG_TOKENS
         cache.move_to_end(key)
 
-        latency = max(1, int((time.time() - start_time) * 1000))
+        latency = int((time.time() - start_time) * 1000)
 
         return {
             "answer": cache[key]["response"],
@@ -119,7 +119,7 @@ def handle_query(request: QueryRequest):
             analytics["totalTokensSaved"] += AVG_TOKENS
             cache.move_to_end(stored_key)
 
-            latency = max(1, int((time.time() - start_time) * 1000))
+            latency = int((time.time() - start_time) * 1000)
 
             return {
                 "answer": value["response"],
@@ -144,7 +144,7 @@ def handle_query(request: QueryRequest):
 
     enforce_lru()
 
-    latency = max(1, int((time.time() - start_time) * 1000))
+    latency = int((time.time() - start_time) * 1000)
 
     return {
         "answer": response,
