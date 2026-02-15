@@ -74,9 +74,13 @@ def enforce_lru_policy():
         cache.popitem(last=False)
 
 def call_llm(query):
-    # Simulate API latency
+    # Simulate real API latency (~1200ms)
     time.sleep(1.2)
     return f"Customer support answer for: {query}"
+
+def calculate_latency(start_time):
+    # Ensures latency is ALWAYS at least 1 ms
+    return max(1, int((time.time() - start_time) * 1000))
 
 # ---------------------------
 # REQUEST MODEL
@@ -103,14 +107,12 @@ def process_query(request: QueryRequest):
     if cache_key in cache:
         analytics["cacheHits"] += 1
         analytics["totalTokensSaved"] += AVG_TOKENS
-        cache.move_to_end(cache_key)  # LRU update
-
-        latency = int((time.time() - start_time) * 1000)
+        cache.move_to_end(cache_key)
 
         return {
             "answer": cache[cache_key]["response"],
             "cached": True,
-            "latency": latency,
+            "latency": calculate_latency(start_time),
             "cacheKey": cache_key
         }
 
@@ -124,12 +126,10 @@ def process_query(request: QueryRequest):
             analytics["totalTokensSaved"] += AVG_TOKENS
             cache.move_to_end(key)
 
-            latency = int((time.time() - start_time) * 1000)
-
             return {
                 "answer": value["response"],
                 "cached": True,
-                "latency": latency,
+                "latency": calculate_latency(start_time),
                 "cacheKey": key
             }
 
@@ -145,12 +145,10 @@ def process_query(request: QueryRequest):
 
     enforce_lru_policy()
 
-    latency = int((time.time() - start_time) * 1000)
-
     return {
         "answer": response,
         "cached": False,
-        "latency": latency,
+        "latency": calculate_latency(start_time),
         "cacheKey": cache_key
     }
 
