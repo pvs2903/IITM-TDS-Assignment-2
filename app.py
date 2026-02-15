@@ -12,16 +12,18 @@ from pydantic import BaseModel
 # ---------------------------
 MODEL_COST_PER_1M = 0.60
 AVG_TOKENS = 800
-TTL_SECONDS = 86400  # 24 hours
+TTL_SECONDS = 86400
 MAX_CACHE_SIZE = 2000
 SIMILARITY_THRESHOLD = 0.95
 
+CACHE_HIT_LATENCY = 10      # ms (very fast)
+CACHE_MISS_LATENCY = 1200   # ms (slow LLM call)
+
 # ---------------------------
-# APP INITIALIZATION
+# APP INIT
 # ---------------------------
 app = FastAPI()
 
-# Enable CORS (fixes OPTIONS 405 issue)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,10 +32,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# LRU cache storage
 cache = OrderedDict()
 
-# Analytics tracking
 analytics = {
     "totalRequests": 0,
     "cacheHits": 0,
@@ -52,35 +52,29 @@ def generate_fake_embedding(text):
     random.seed(hash(text))
     return [random.random() for _ in range(20)]
 
-def cosine_similarity(vec1, vec2):
-    dot = sum(a*b for a, b in zip(vec1, vec2))
-    mag1 = math.sqrt(sum(a*a for a in vec1))
-    mag2 = math.sqrt(sum(b*b for b in vec2))
-    if mag1 == 0 or mag2 == 0:
+def cosine_similarity(a, b):
+    dot = sum(x*y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x*x for x in a))
+    mag_b = math.sqrt(sum(y*y for y in b))
+    if mag_a == 0 or mag_b == 0:
         return 0
-    return dot / (mag1 * mag2)
+    return dot / (mag_a * mag_b)
 
-def remove_expired_entries():
+def cleanup_expired():
     now = time.time()
-    expired_keys = [
-        key for key, value in cache.items()
-        if now - value["timestamp"] > TTL_SECONDS
+    expired = [
+        key for key, val in cache.items()
+        if now - val["timestamp"] > TTL_SECONDS
     ]
-    for key in expired_keys:
+    for key in expired:
         del cache[key]
 
-def enforce_lru_policy():
+def enforce_lru():
     while len(cache) > MAX_CACHE_SIZE:
         cache.popitem(last=False)
 
-def call_llm(query):
-    # Simulate real API latency (~1200ms)
-    time.sleep(1.2)
-    return f"Customer support answer for: {query}"
-
-def calculate_latency(start_time):
-    # Ensures latency is ALWAYS at least 1 ms
-    return max(1, int((time.time() - start_time) * 1000))
+def simulate_llm_call():
+    time.sleep(CACHE_MISS_LATENCY / 1000)
 
 # ---------------------------
 # REQUEST MODEL
@@ -91,69 +85,69 @@ class QueryRequest(BaseModel):
     application: str
 
 # ---------------------------
-# MAIN QUERY ENDPOINT
+# MAIN ENDPOINT
 # ---------------------------
 
 @app.post("/")
-def process_query(request: QueryRequest):
-    start_time = time.time()
+def handle_query(request: QueryRequest):
     analytics["totalRequests"] += 1
-    remove_expired_entries()
+    cleanup_expired()
 
     query = request.query
-    cache_key = md5_hash(query)
+    key = md5_hash(query)
 
-    # 1️⃣ Exact Match Cache
-    if cache_key in cache:
+    # 1️⃣ Exact Match
+    if key in cache:
         analytics["cacheHits"] += 1
         analytics["totalTokensSaved"] += AVG_TOKENS
-        cache.move_to_end(cache_key)
+        cache.move_to_end(key)
 
         return {
-            "answer": cache[cache_key]["response"],
+            "answer": cache[key]["response"],
             "cached": True,
-            "latency": calculate_latency(start_time),
-            "cacheKey": cache_key
+            "latency": CACHE_HIT_LATENCY,
+            "cacheKey": key
         }
 
-    # 2️⃣ Semantic Similarity Cache
+    # 2️⃣ Semantic Match
     query_embedding = generate_fake_embedding(query)
-
-    for key, value in cache.items():
-        similarity = cosine_similarity(query_embedding, value["embedding"])
-        if similarity > SIMILARITY_THRESHOLD:
+    for stored_key, value in cache.items():
+        sim = cosine_similarity(query_embedding, value["embedding"])
+        if sim > SIMILARITY_THRESHOLD:
             analytics["cacheHits"] += 1
             analytics["totalTokensSaved"] += AVG_TOKENS
-            cache.move_to_end(key)
+            cache.move_to_end(stored_key)
 
             return {
                 "answer": value["response"],
                 "cached": True,
-                "latency": calculate_latency(start_time),
-                "cacheKey": key
+                "latency": CACHE_HIT_LATENCY,
+                "cacheKey": stored_key
             }
 
-    # 3️⃣ Cache Miss → Call LLM
+    # 3️⃣ Cache Miss
     analytics["cacheMisses"] += 1
-    response = call_llm(query)
+    simulate_llm_call()
 
-    cache[cache_key] = {
+    response = f"Customer support answer for: {query}"
+
+    cache[key] = {
         "response": response,
         "embedding": query_embedding,
         "timestamp": time.time()
     }
 
-    enforce_lru_policy()
+    enforce_lru()
 
     return {
         "answer": response,
         "cached": False,
-        "latency": calculate_latency(start_time),
-        "cacheKey": cache_key
+        "latency": CACHE_MISS_LATENCY,
+        "cacheKey": key
     }
 
 # ---------------------------
-# ANALYTICS ENDPOINT
+# ANALYTICS
 # ---------------------------
 
 @app.get("/analytics")
