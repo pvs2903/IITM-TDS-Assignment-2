@@ -12,18 +12,16 @@ from pydantic import BaseModel
 # ---------------------------
 MODEL_COST_PER_1M = 0.60
 AVG_TOKENS = 800
-TTL_SECONDS = 86400
+TTL_SECONDS = 86400  # 24 hours
 MAX_CACHE_SIZE = 2000
 SIMILARITY_THRESHOLD = 0.95
 
-CACHE_HIT_LATENCY = 10      # ms (very fast)
-CACHE_MISS_LATENCY = 1200   # ms (slow LLM call)
-
 # ---------------------------
-# APP INIT
+# APP INITIALIZATION
 # ---------------------------
 app = FastAPI()
 
+# Enable CORS (Fixes OPTIONS 405 issue)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,8 +30,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# In-memory LRU cache
 cache = OrderedDict()
 
+# Analytics tracking
 analytics = {
     "totalRequests": 0,
     "cacheHits": 0,
@@ -42,7 +42,7 @@ analytics = {
 }
 
 # ---------------------------
-# UTILITIES
+# UTILITY FUNCTIONS
 # ---------------------------
 
 def md5_hash(text):
@@ -53,28 +53,25 @@ def generate_fake_embedding(text):
     return [random.random() for _ in range(20)]
 
 def cosine_similarity(a, b):
-    dot = sum(x*y for x, y in zip(a, b))
-    mag_a = math.sqrt(sum(x*x for x in a))
-    mag_b = math.sqrt(sum(y*y for y in b))
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(y * y for y in b))
     if mag_a == 0 or mag_b == 0:
         return 0
     return dot / (mag_a * mag_b)
 
 def cleanup_expired():
     now = time.time()
-    expired = [
-        key for key, val in cache.items()
-        if now - val["timestamp"] > TTL_SECONDS
+    expired_keys = [
+        key for key, value in cache.items()
+        if now - value["timestamp"] > TTL_SECONDS
     ]
-    for key in expired:
+    for key in expired_keys:
         del cache[key]
 
 def enforce_lru():
     while len(cache) > MAX_CACHE_SIZE:
         cache.popitem(last=False)
-
-def simulate_llm_call():
-    time.sleep(CACHE_MISS_LATENCY / 1000)
 
 # ---------------------------
 # REQUEST MODEL
@@ -85,49 +82,57 @@ class QueryRequest(BaseModel):
     application: str
 
 # ---------------------------
-# MAIN ENDPOINT
+# MAIN QUERY ENDPOINT
 # ---------------------------
 
 @app.post("/")
 def handle_query(request: QueryRequest):
+    start_time = time.time()
     analytics["totalRequests"] += 1
     cleanup_expired()
 
     query = request.query
     key = md5_hash(query)
 
-    # 1️⃣ Exact Match
+    # 1️⃣ Exact Match Cache
     if key in cache:
         analytics["cacheHits"] += 1
         analytics["totalTokensSaved"] += AVG_TOKENS
         cache.move_to_end(key)
 
+        latency = max(1, int((time.time() - start_time) * 1000))
+
         return {
             "answer": cache[key]["response"],
             "cached": True,
-            "latency": CACHE_HIT_LATENCY,
+            "latency": latency,
             "cacheKey": key
         }
 
-    # 2️⃣ Semantic Match
+    # 2️⃣ Semantic Match Cache
     query_embedding = generate_fake_embedding(query)
+
     for stored_key, value in cache.items():
-        sim = cosine_similarity(query_embedding, value["embedding"])
-        if sim > SIMILARITY_THRESHOLD:
+        similarity = cosine_similarity(query_embedding, value["embedding"])
+        if similarity > SIMILARITY_THRESHOLD:
             analytics["cacheHits"] += 1
             analytics["totalTokensSaved"] += AVG_TOKENS
             cache.move_to_end(stored_key)
 
+            latency = max(1, int((time.time() - start_time) * 1000))
+
             return {
                 "answer": value["response"],
                 "cached": True,
-                "latency": CACHE_HIT_LATENCY,
+                "latency": latency,
                 "cacheKey": stored_key
             }
 
-    # 3️⃣ Cache Miss
+    # 3️⃣ Cache Miss → Simulate LLM Call (REAL DELAY)
     analytics["cacheMisses"] += 1
-    simulate_llm_call()
+
+    # Simulate real API latency (~1200ms)
+    time.sleep(1.2)
 
     response = f"Customer support answer for: {query}"
 
@@ -139,15 +144,17 @@ def handle_query(request: QueryRequest):
 
     enforce_lru()
 
+    latency = max(1, int((time.time() - start_time) * 1000))
+
     return {
         "answer": response,
         "cached": False,
-        "latency": CACHE_MISS_LATENCY,
+        "latency": latency,
         "cacheKey": key
     }
 
 # ---------------------------
-# ANALYTICS
+# ANALYTICS ENDPOINT
 # ---------------------------
 
 @app.get("/analytics")
